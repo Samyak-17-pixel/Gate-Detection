@@ -1,0 +1,29 @@
+# Datasets
+air_dataset/
+images/
+gopro_videos/
+
+# Videos
+*.mp4
+*.MP4
+*.mov
+*.MOV
+*.avi
+
+# Virtual environments
+venv/
+env/
+.venv/
+gate_env/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# IDE
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
