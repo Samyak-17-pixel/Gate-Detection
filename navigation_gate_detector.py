@@ -2,206 +2,214 @@ import cv2
 import numpy as np
 import os
 
-IMAGE_FOLDER = "images"
+IMAGE_FOLDER = "images/image_navigation_01"
 
-MIN_POLE_HEIGHT = 80
+success = 0
+fail = 0
+total = 0
 
+cv2.namedWindow("Gate Detection", cv2.WINDOW_NORMAL)
+cv2.resizeWindow("Gate Detection",900,500)
 
-# ---------------------------------------------------
-# COLOR MASK (RED + GREEN)
-# ---------------------------------------------------
+cv2.namedWindow("Edges", cv2.WINDOW_NORMAL)
+cv2.resizeWindow("Edges",450,250)
 
-def get_gate_color_mask(frame):
 
-    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+def detect_vertical_poles(frame):
 
-    # red ranges
-    lower_red1 = np.array([0,90,40])
-    upper_red1 = np.array([15,255,255])
+    height, width = frame.shape[:2]
 
-    lower_red2 = np.array([160,90,40])
-    upper_red2 = np.array([180,255,255])
+    roi = frame[int(height*0.01):int(height*0.99), :]
 
-    red1 = cv2.inRange(hsv, lower_red1, upper_red1)
-    red2 = cv2.inRange(hsv, lower_red2, upper_red2)
+    gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
 
-    red_mask = cv2.bitwise_or(red1, red2)
+    clahe = cv2.createCLAHE(clipLimit=4.0, tileGridSize=(8,8))
+    gray = clahe.apply(gray)
 
-    # green range
-    lower_green = np.array([45,120,60])
-    upper_green = np.array([80,255,255])
+    blur = cv2.GaussianBlur(gray,(3,3),0)
 
-    green_mask = cv2.inRange(hsv, lower_green, upper_green)
+    sobelx = cv2.Sobel(blur, cv2.CV_64F, 1, 0, ksize=3)
+    sobelx = np.uint8(np.absolute(sobelx))
 
-    mask = cv2.bitwise_or(red_mask, green_mask)
+    edges = cv2.Canny(sobelx,25,70)
 
-    kernel = np.ones((5,5),np.uint8)
-    mask = cv2.morphologyEx(mask,cv2.MORPH_CLOSE,kernel)
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT,(3,15))
+    edges = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel)
 
-    return mask
+    filtered = np.zeros_like(edges)
 
+    min_run = 60
+    h, w = edges.shape
 
-# ---------------------------------------------------
-# DETECT VERTICAL EDGES
-# ---------------------------------------------------
+    for x in range(w):
 
-def detect_vertical_lines(frame, mask):
+        run_start = None
 
-    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        for y in range(h):
 
-    sobel = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=5)
-    sobel = np.absolute(sobel)
+            if edges[y,x] != 0:
 
-    if np.max(sobel) != 0:
-        sobel = np.uint8(255 * sobel / np.max(sobel))
-    else:
-        sobel = np.uint8(sobel)
+                if run_start is None:
+                    run_start = y
 
-    _, edges = cv2.threshold(sobel, 50, 255, cv2.THRESH_BINARY)
+            else:
 
-    # keep only color regions
-    edges = cv2.bitwise_and(edges, mask)
+                if run_start is not None:
 
-    lines = cv2.HoughLinesP(
-        edges,
-        1,
-        np.pi/180,
-        threshold=50,
-        minLineLength=60,
-        maxLineGap=40
-    )
+                    if y-run_start >= min_run:
+                        filtered[run_start:y,x] = 255
 
-    candidates = []
+                    run_start = None
 
-    if lines is None:
-        return candidates
+        if run_start is not None and h-run_start >= min_run:
+            filtered[run_start:h,x] = 255
 
-    for line in lines:
 
-        x1,y1,x2,y2 = line[0]
+    cv2.imshow("Edges", cv2.resize(filtered,(450,250)))
 
-        dx = abs(x2-x1)
-        dy = abs(y2-y1)
+    column_strength = np.sum(filtered, axis=0)
 
-        if dy > dx*3 and dy > MIN_POLE_HEIGHT:
-            candidates.append((x1,y1,x2,y2))
+    if np.max(column_strength) == 0:
+        return []
 
-    return candidates
+    column_strength = cv2.GaussianBlur(column_strength.reshape(1,-1),(1,51),0).flatten()
 
+    sorted_idx = np.argsort(column_strength)[::-1]
 
-# ---------------------------------------------------
-# LINE CENTER
-# ---------------------------------------------------
+    poles = []
+    min_sep = 80
 
-def line_center(line):
+    for idx in sorted_idx:
 
-    x1,y1,x2,y2 = line
+        if len(poles) == 0:
+            poles.append(idx)
 
-    cx = int((x1+x2)/2)
+        elif abs(idx - poles[0]) > min_sep:
+            poles.append(idx)
+            break
 
-    top = min(y1,y2)
-    bottom = max(y1,y2)
+    return poles
 
-    return cx,top,bottom
 
+def detect_horizontal_bars(frame, left, right):
 
-# ---------------------------------------------------
-# CHOOSE BEST POLE PAIR
-# ---------------------------------------------------
+    height = frame.shape[0]
 
-def choose_best_pair(lines, frame_width):
+    roi = frame[:, left:right]
 
-    best_span = 0
-    best_pair = None
+    gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
 
-    for i in range(len(lines)):
-        for j in range(i+1,len(lines)):
+    blur = cv2.GaussianBlur(gray,(5,5),0)
 
-            cx1,top1,bot1 = line_center(lines[i])
-            cx2,top2,bot2 = line_center(lines[j])
+    sobely = cv2.Sobel(blur, cv2.CV_64F, 0, 1, ksize=3)
+    sobely = np.uint8(np.absolute(sobely))
 
-            if cx2 <= cx1:
-                continue
+    edges = cv2.Canny(sobely,30,80)
 
-            height1 = bot1-top1
-            height2 = bot2-top2
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT,(25,3))
+    edges = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel)
 
-            if height1 < MIN_POLE_HEIGHT or height2 < MIN_POLE_HEIGHT:
-                continue
+    row_strength = np.sum(edges, axis=1)
 
-            span = cx2 - cx1
+    if np.max(row_strength) == 0:
+        return []
 
-            if span > best_span:
-                best_span = span
-                best_pair = ((cx1,top1,bot1),(cx2,top2,bot2))
+    row_strength = cv2.GaussianBlur(row_strength.reshape(-1,1),(51,1),0).flatten()
 
-    return best_pair
+    peaks = np.argsort(row_strength)[::-1]
 
+    bars = []
 
-# ---------------------------------------------------
-# PROCESS IMAGE
-# ---------------------------------------------------
+    min_sep = 40
 
-def process_image(path):
+    for idx in peaks:
 
-    frame = cv2.imread(path)
+        if len(bars) == 0:
+            bars.append(idx)
 
-    if frame is None:
-        return
+        elif abs(idx - bars[0]) > min_sep:
+            bars.append(idx)
+            break
 
-    frame = cv2.resize(frame,(960,540))
+    return bars
 
-    mask = get_gate_color_mask(frame)
-
-    lines = detect_vertical_lines(frame, mask)
-
-    pair = choose_best_pair(lines, frame.shape[1])
-
-    height,width,_ = frame.shape
-    image_center = width//2
-
-    cv2.line(frame,(image_center,0),(image_center,height),(255,255,0),2)
-
-    if pair is not None:
-
-        left,right = pair
-
-        lx,ltop,lbot = left
-        rx,rtop,rbot = right
-
-        cv2.line(frame,(lx,ltop),(lx,lbot),(0,255,0),3)
-        cv2.line(frame,(rx,rtop),(rx,rbot),(0,255,0),3)
-
-        top = min(ltop,rtop)
-        bottom = max(lbot,rbot)
-
-        cv2.rectangle(frame,(lx,top),(rx,bottom),(0,255,0),3)
-
-        gate_center_x = int((lx+rx)/2)
-        gate_center_y = int((top+bottom)/2)
-
-        cv2.circle(frame,(gate_center_x,gate_center_y),10,(0,0,255),-1)
-
-        error = gate_center_x - image_center
-
-        print(path,"alignment error:",error)
-
-    cv2.imshow("Mask",mask)
-    cv2.imshow("Navigation Gate Detection",frame)
-
-    cv2.waitKey(0)
-
-
-# ---------------------------------------------------
-# MAIN LOOP
-# ---------------------------------------------------
 
 images = sorted(os.listdir(IMAGE_FOLDER))
 
 for img in images:
 
-    if img.endswith(".png"):
+    if not img.endswith(".png"):
+        continue
 
-        process_image(os.path.join(IMAGE_FOLDER,img))
+    total += 1
+
+    path = os.path.join(IMAGE_FOLDER,img)
+
+    frame = cv2.imread(path)
+
+    if frame is None:
+        continue
+
+    poles = detect_vertical_poles(frame)
+
+    if len(poles) == 2:
+
+        left = min(poles)
+        right = max(poles)
+
+        bars = detect_horizontal_bars(frame, left, right)
+
+        h = frame.shape[0]
+
+        cv2.line(frame,(left,0),(left,h),(0,255,0),3)
+        cv2.line(frame,(right,0),(right,h),(0,255,0),3)
+
+        if len(bars) >= 1:
+
+            for y in bars:
+
+                cv2.line(frame,(left,y),(right,y),(255,0,0),3)
+
+        distance = right-left
+
+        center = (left+right)//2
+
+        cv2.circle(frame,(center,h//2),10,(0,255,255),-1)
+
+        cv2.putText(frame,
+                    f"Width: {distance}px",
+                    (left,50),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    1.2,
+                    (0,255,0),
+                    3)
+
+        success += 1
+
+    else:
+
+        cv2.putText(frame,
+                    "Gate Not Detected",
+                    (50,60),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    1.2,
+                    (0,0,255),
+                    3)
+
+        fail += 1
+
+
+    display = cv2.resize(frame,(900,500))
+    cv2.imshow("Gate Detection", display)
+
+    if cv2.waitKey(1000) == 27:
+        break
+
+
+print("\nDetection Summary")
+print("---------------------------")
+print("Total Images:", total)
+print("Successful:", success)
+print("Failed:", fail)
 
 cv2.destroyAllWindows()

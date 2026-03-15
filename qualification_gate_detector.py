@@ -2,7 +2,7 @@ import cv2
 import numpy as np
 import os
 
-IMAGE_FOLDER = "images/image_qualification"
+IMAGE_FOLDER = "images/image_qualification_01"
 
 success = 0
 fail = 0
