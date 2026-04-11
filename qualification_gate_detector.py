@@ -43,7 +43,7 @@ def main() -> None:
         temporal_alpha=args.temporal,
     )
     temporal = (
-        GateTemporalFilter(cfg.temporal_alpha)
+        GateTemporalFilter(cfg.temporal_alpha, cfg.temporal_max_jump_frac)
         if cfg.temporal_alpha > 0
         else None
     )

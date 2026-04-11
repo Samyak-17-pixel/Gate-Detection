@@ -107,7 +107,11 @@ def _intersect_lines(
 def _horizontal_line_from_edges(
     gray_roi: np.ndarray, x_left: int, x_right: int, prefer_upper: bool
 ) -> Optional[Tuple[np.ndarray, np.ndarray]]:
-    """Fit horizontal-ish line from Sobel-y edges between poles."""
+    """
+    Fit top/bottom bar as a line between poles. Tries **slanted** bars first (fitLine on
+    Sobel-y edge pixels in upper/lower half); falls back to a constant-height row peak
+    when too few edges are found (legacy horizontal-bar case).
+    """
     h, w = gray_roi.shape[:2]
     x0 = max(0, min(x_left, x_right) - 5)
     x1 = min(w, max(x_left, x_right) + 5)
@@ -116,8 +120,30 @@ def _horizontal_line_from_edges(
     sy = cv2.Sobel(blur, cv2.CV_64F, 0, 1, ksize=3)
     sy = np.uint8(np.absolute(sy))
     e = cv2.Canny(sy, 25, 70)
-    k = cv2.getStructuringElement(cv2.MORPH_RECT, (21, 3))
+    k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
     e = cv2.morphologyEx(e, cv2.MORPH_CLOSE, k)
+
+    pad = min(28, max(12, h // 10))
+    if prefer_upper:
+        y0, y1 = 0, min(h, h // 2 + pad)
+    else:
+        y0, y1 = max(0, h // 2 - pad), h
+    if y1 <= y0 + 8:
+        if prefer_upper:
+            y0, y1 = 0, max(8, h // 2)
+        else:
+            y0, y1 = max(0, h // 2), h
+
+    sub = e[y0:y1, :]
+    ys, xs = np.where(sub > 0)
+    if ys.size >= 28:
+        ys_f = ys.astype(np.float32) + float(y0)
+        xs_f = xs.astype(np.float32) + float(x0)
+        pts = np.stack([xs_f, ys_f], axis=1).astype(np.float32).reshape(-1, 1, 2)
+        line = cv2.fitLine(pts, cv2.DIST_L2, 0, 0.01, 0.01)
+        vx, vy, x, y = float(line[0]), float(line[1]), float(line[2]), float(line[3])
+        return np.array([[x], [y]], dtype=np.float64), np.array([[vx], [vy]], dtype=np.float64)
+
     row_s = np.sum(e, axis=1)
     if np.max(row_s) < 50:
         return None
