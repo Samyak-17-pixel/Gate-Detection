@@ -1,508 +1,333 @@
 # SAUVC Gate Detection Pipeline
 
-This repository contains the computer vision pipeline used for detecting navigation and qualification gates for an Autonomous Underwater Vehicle (AUV) developed for the **Singapore Autonomous Underwater Vehicle Challenge (SAUVC)**.
+Classical computer vision pipeline for **navigation** and **qualification** gates in the **Singapore Autonomous Underwater Vehicle Challenge (SAUVC)**. It runs on **OpenCV + NumPy** and targets embedded use (e.g. **Jetson Orin Nano**).
 
-The objective of this project is to enable an AUV to autonomously detect underwater gate structures, determine the position of the vertical poles, compute the horizontal distance between them in the camera frame, and use this information to align with the center of the gate before passing through it.
+**What you get from each frame**
 
-The detection pipeline is implemented using **classical computer vision techniques with OpenCV** so that it can run efficiently on embedded hardware such as the **Jetson Orin Nano**, which is used as the onboard compute unit of the vehicle.
+| Output | Meaning |
+|--------|--------|
+| **Gate state** | `none` — no reliable pole; `one` — single vertical structure (no fake “second pole”); `two` — left/right poles for a gate |
+| **Geometry (pixels)** | Pole x-positions, apparent width (px), image-center error, skew metric |
+| **Optional pose** | Plane normal in the camera frame, **yaw error** hint (degrees), mean reprojection error (px) — when PnP succeeds and reprojection is good enough for display |
 
-The repository also includes tools for dataset generation, dataset verification, and extraction of frames from GoPro recordings.
-
----
-
-# Table of Contents
-
-1. Project Objective  
-2. Detection Philosophy  
-3. Gate Detection Pipeline  
-4. Pipeline Diagram  
-5. Repository Structure  
-6. Detailed Description of Each File  
-7. Dataset Generation  
-8. Running the Detection  
-9. Dependencies  
-10. Example Detection Output  
-11. Deployment on the AUV  
-12. Future Improvements  
+The rulebook PDF in this repo (`The Singapore AUV Challenge 2026 Rulebook.pdf`) defines task geometry; pole spacing is modeled as **1.5 m** between verticals unless you override it.
 
 ---
 
-# Project Objective
+## Table of contents
 
-In the SAUVC competition environment, the AUV must perform the following sequence autonomously:
-
-1. Start from a designated starting zone
-2. Move forward into the arena
-3. Detect the gate structure
-4. Align itself with the center of the gate
-5. Pass through the gate without touching it
-
-To achieve this, the perception system must reliably detect the **vertical poles of the gate** even in challenging underwater conditions.
-
-The output of the detection algorithm is:
-
-**Distance between the left and right poles in pixels**
-
-This value is later used by the control system to compute alignment error and adjust vehicle motion.
-
----
-
-# Detection Philosophy
-
-Underwater environments degrade visual data due to several factors:
-
-- Light absorption
-- Color attenuation
-- Surface reflections
-- Suspended particles
-- Pool floor reflections
-- Reduced contrast
-
-Because of these effects, relying purely on **color detection** is unreliable at larger distances.
-
-However, the **geometric structure of the gate remains consistent**, particularly the two tall vertical poles.
-
-Therefore the detection pipeline focuses primarily on **structural edge detection**, specifically identifying strong vertical structures rather than relying only on color segmentation.
+1. [Quick start](#quick-start)
+2. [Repository layout](#repository-layout)
+3. [How processing works (high level)](#how-processing-works-high-level)
+4. [Detection states (`none` / `one` / `two`)](#detection-states-none--one--two)
+5. [Image processing stages](#image-processing-stages)
+6. [Pose: PnP, FOV, and yaw](#pose-pnp-fov-and-yaw)
+7. [Temporal smoothing (video / live)](#temporal-smoothing-video--live)
+8. [Command-line tools](#command-line-tools)
+9. [Configuration (`PipelineConfig`)](#configuration-pipelineconfig)
+10. [Overlays and evaluation](#overlays-and-evaluation)
+11. [Datasets and `.gitignore`](#datasets-and-gitignore)
+12. [Tuning and troubleshooting](#tuning-and-troubleshooting)
+13. [Integration on the vehicle](#integration-on-the-vehicle)
+14. [Dependencies](#dependencies)
+15. [Authors](#authors)
 
 ---
 
-# Gate Detection Pipeline
+## Quick start
 
-The detection algorithm follows a multi-stage pipeline that progressively isolates vertical structures corresponding to gate poles.
+**1. Environment (Python 3)**
 
-The stages are:
-
-1. Image preprocessing  
-2. Contrast enhancement  
-3. Noise reduction  
-4. Vertical gradient extraction  
-5. Edge detection  
-6. Vertical edge connection  
-7. Vertical structure filtering  
-8. Column strength analysis  
-9. Pole detection  
-10. Distance calculation  
-
-Each stage is explained below.
-
----
-
-## Step 1 – Image Preprocessing
-
-The input image is converted to grayscale.
-
-Grayscale simplifies the data representation and removes dependence on color, allowing the algorithm to focus on intensity gradients.
-
----
-
-## Step 2 – Contrast Enhancement (CLAHE)
-
-Underwater images often suffer from low contrast.
-
-The algorithm applies **Contrast Limited Adaptive Histogram Equalization (CLAHE)** to improve local contrast.
-
-CLAHE enhances local brightness variations and reveals structural details such as faint edges.
-
----
-
-## Step 3 – Noise Reduction
-
-A Gaussian blur filter is applied to reduce high-frequency noise caused by:
-
-- suspended particles
-- sensor noise
-- lighting artifacts
-
-This smoothing step improves the stability of edge detection.
-
----
-
-## Step 4 – Vertical Gradient Extraction
-
-Gate poles are vertical structures.
-
-To highlight vertical structures, the algorithm computes the **horizontal image gradient using the Sobel operator**.
-
-This operation emphasizes vertical edges while suppressing horizontal edges.
-
----
-
-## Step 5 – Edge Detection
-
-Canny Edge Detection is applied to detect strong edges in the image.
-
-Canny performs several operations:
-
-- gradient thresholding
-- non-maximum suppression
-- edge tracking
-
-The output is a binary edge map.
-
----
-
-## Step 6 – Vertical Edge Connection
-
-Underwater edges often appear fragmented due to noise.
-
-Morphological operations are applied to reconnect vertical edge fragments.
-
-A vertical structuring element is used so that primarily vertical structures are reinforced.
-
----
-
-## Step 7 – Vertical Structure Filtering
-
-Random noise produces small edge fragments.
-
-Gate poles extend across a large vertical portion of the image.
-
-Therefore vertical edge segments shorter than a defined threshold are removed.
-
-This filtering step leaves only large vertical structures.
-
----
-
-## Step 8 – Column Strength Analysis
-
-The filtered edge map is collapsed vertically.
-
-For each image column the algorithm computes the total edge strength.
-
-Columns containing vertical poles accumulate large edge values.
-
-This produces peaks in the column strength histogram.
-
----
-
-## Step 9 – Pole Detection
-
-The two strongest peaks in the column histogram correspond to:
-
-- Left pole
-- Right pole
-
-These x-coordinates represent the detected pole positions.
-
----
-
-## Step 10 – Pole Distance Calculation
-
-The horizontal pixel distance between poles is computed:
-
-distance = right_pole_x - left_pole_x
-
-This value represents the apparent gate width in the image.
-
-It can be used to estimate alignment and relative position.
-
----
-
-## Detection Pipeline Diagram
-
-The gate detection system follows a sequential image processing pipeline. Each stage progressively enhances vertical structural features while suppressing noise and irrelevant edges. The goal is to isolate the two vertical poles of the gate and compute the distance between them.
-
-```
-Input Image
-    │
-Grayscale Conversion
-    │
-CLAHE Contrast Enhancement
-    │
-Gaussian Blur
-    │
-Sobel X Gradient (Vertical Edge Emphasis)
-    │
-Canny Edge Detection
-    │
-Vertical Morphological Closing
-    │
-Vertical Edge Filtering
-    │
-Column Strength Histogram
-    │
-Pole Detection
-    │
-Pole Distance Calculation
+```bash
+cd /path/to/Gate-Detection
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
 ```
 
-## Explanation of the Pipeline
+**2. Put images in a folder** of `.png` files (see [Datasets](#datasets-and-gitignore)). Defaults assume folders under `images/`.
 
+**3. Run a batch viewer**
 
-Each stage progressively removes noise and highlights the vertical structures that correspond to the gate poles.
+```bash
+# Navigation-style (structure only, no HSV boost)
+python3 navigation_gate_detector.py --folder images/image_navigation_01
 
----
-
-# Repository Structure
-
-The repository is organized to clearly separate the detection algorithms, dataset generation scripts, verification tools, and video frame extraction utilities.
-
-```
-gate_detection/
-│
-├── navigation_gate_detector.py
-├── qualification_gate_detector.py
-│
-├── collect_navigation_air.py
-├── collect_qualification_air.py
-│
-├── verify_navigation_air_dataset.py
-├── verify_qualification_air_dataset.py
-│
-├── extract_gopro_frames.py
-│
-├── .gitignore
-└── README.md
+# Qualification-style (optional red/orange HSV boost)
+python3 qualification_gate_detector.py --folder images/image_qualification_01
 ```
 
-Each file in the repository plays a specific role in building, testing, and validating the gate detection pipeline.
+**4. Live camera**
 
----
-
-# Detailed Description of Each File
-
-## navigation_gate_detector.py
-
-This script performs detection of the **navigation gate** used in the SAUVC navigation task.
-
-The navigation gate consists of vertical poles with alternating colored segments. However, underwater color degradation makes color detection unreliable at longer distances. Therefore the algorithm focuses on detecting **strong vertical structural edges**.
-
-Main responsibilities of this script include:
-
-- Loading images from the dataset
-- Running the vertical pole detection pipeline
-- Identifying the strongest vertical pole candidates
-- Computing the horizontal distance between the poles
-- Displaying the detection results on the image
-- Printing the pole distance in pixels
-
-This script is intended to eventually run onboard the AUV during real-time mission execution.
-
----
-
-## qualification_gate_detector.py
-
-This script performs detection of the **qualification gate** used during the SAUVC qualification task.
-
-The qualification gate typically consists of two vertical poles connected by horizontal bars. The algorithm ignores horizontal bars and focuses purely on identifying the vertical poles.
-
-The script performs the following tasks:
-
-- Load images from the qualification dataset
-- Run the vertical pole detection pipeline
-- Detect left and right vertical poles
-- Compute pole-to-pole distance
-- Display detection visualization
-- Calculate detection statistics
-
-The script also reports:
-
-- Total images processed
-- Successful detections
-- Failed detections
-- Detection success rate
-
-This allows the developer to evaluate the reliability of the algorithm before deploying it on the AUV.
-
----
-
-## collect_navigation_air.py
-
-This script is used to collect **navigation gate images in air** using a camera connected to the system.
-
-The purpose of this script is to create an initial dataset that can be used for:
-
-- algorithm development
-- parameter tuning
-- debugging detection logic
-
-Images captured in air help verify the detection pipeline before testing underwater.
-
----
-
-## collect_qualification_air.py
-
-This script captures **qualification gate images in air**.
-
-It functions similarly to the navigation air dataset collector but is specifically used to generate a dataset for the qualification gate.
-
-These datasets allow developers to:
-
-- verify detection reliability
-- test different detection parameters
-- observe algorithm behaviour under controlled conditions
-
----
-
-## verify_navigation_air_dataset.py
-
-This script evaluates the performance of the navigation gate detection algorithm using the collected air dataset.
-
-The script performs the following steps:
-
-1. Loads each image from the dataset
-2. Runs the navigation gate detection algorithm
-3. Displays detection results
-4. Tracks detection success statistics
-
-The script outputs:
-
-- number of successful detections
-- number of failed detections
-- detection success rate
-
-This allows developers to quantitatively measure algorithm performance.
-
----
-
-## verify_qualification_air_dataset.py
-
-This script verifies the performance of the qualification gate detection algorithm.
-
-The script:
-
-- loads each image from the qualification dataset
-- runs the pole detection pipeline
-- displays the detection results
-- calculates detection accuracy statistics
-
-This verification stage is important before testing the algorithm underwater.
-
----
-
-## extract_gopro_frames.py
-
-This script extracts image frames from GoPro videos recorded during pool testing.
-
-GoPro recordings provide valuable underwater data that cannot easily be recreated in air datasets.
-
-The script performs the following tasks:
-
-- scans GoPro video folders
-- processes multiple video files
-- extracts frames at a chosen frame rate
-- saves extracted images to dataset folders
-
-These extracted images are then used for algorithm testing and parameter tuning.
-
----
-
-# Dataset Handling
-
-Large datasets and videos are **not stored inside the repository** to keep the repository lightweight.
-
-The following directories are excluded using `.gitignore`:
-
-```
-air_dataset/
-images/
-gopro videos/
+```bash
+python3 live_gate_detector.py --device 0 --fov 65 --temporal 0.4
+# Qualification-style color boost:
+python3 live_gate_detector.py --qualification --fov 65
 ```
 
-These directories contain:
+**5. Metrics only (no GUI)**
 
-- air dataset images
-- extracted underwater images
-- GoPro experiment recordings
+```bash
+python3 evaluate_gates.py --folder images/image_navigation_01
+python3 evaluate_gates.py --folder images/image_qualification_01 --qualification
+```
 
-Datasets can be stored locally or on external storage systems.
+Press **Esc** in OpenCV windows to stop batch scripts; **q** or **Esc** in live mode.
 
 ---
 
-# Running the Detection
+## Repository layout
 
-To run the qualification gate detector:
-
-```
-python3 qualification_gate_detector.py
-```
-
-To run the navigation gate detector:
-
-```
-python3 navigation_gate_detector.py
-```
-
-
-
-The scripts will:
-
-1. Load dataset images
-2. Run the detection pipeline
-3. Detect vertical poles
-4. Compute pole distance
-5. Display the detection results
-
-The detected pole distance can then be used by the AUV control system for alignment.
+| File | Role |
+|------|------|
+| `gate_detection_core.py` | Vertical-structure pipeline, column histogram, **`detect_gate_with_state()`** → `none` / `one` / `two`, ROI, filtered edges for PnP |
+| `gate_pose_pnp.py` | Approximate **K** from horizontal FOV, **4 image corners** (line fits + fallbacks), **`solvePnP` / refine**, normal, **yaw**, reprojection error |
+| `gate_pipeline.py` | **`PipelineConfig`**, **`process_frame()`** — detection → optional temporal → PnP → overlays; PnP draw gated by reproj ≤ **25 px** |
+| `gate_draw.py` | Poles, center line, metrics text, PnP arrow / corners, one-pole UI |
+| `gate_temporal.py` | **EMA** on left/right pole **x** for sequences |
+| `navigation_gate_detector.py` | Batch over `--folder`; navigation preset (`use_color_boost=False`) |
+| `qualification_gate_detector.py` | Batch; qualification preset (`use_color_boost=True`) |
+| `live_gate_detector.py` | Webcam / V4L2 loop, FPS overlay |
+| `evaluate_gates.py` | Batch stats: state counts, PnP reproj, \|yaw\| when reproj ≤ 25 px |
+| `requirements.txt` | Pinned OpenCV / NumPy |
+| `.gitignore` | Local datasets and media excluded from git |
 
 ---
 
-# Dependencies
+## How processing works (high level)
 
-The project requires the following Python libraries:
-
-- OpenCV
-- NumPy
-
-Install dependencies using:
-
+```mermaid
+flowchart LR
+  subgraph detect [Detection]
+    A[BGR frame] --> B[gate_detection_core]
+    B --> C{state}
+  end
+  C -->|none| D[Status overlay]
+  C -->|one| E[Single pole + hint]
+  C -->|two| F[Optional temporal EMA]
+  F --> G[gate_pose_pnp]
+  G --> H[gate_draw]
 ```
-pip install opencv-python numpy
+
+For **`two`**: optional **temporal** filter adjusts pole x-coordinates → **PnP** estimates pose using pole lines, horizontal edges, and a **1.5 m** wide rectangle (height from image aspect when not fixed) → **draw** shows geometry and, if PnP is OK and **reproj ≤ 25 px**, the normal arrow and corner dots.
+
+---
+
+## Detection states (`none` / `one` / `two`)
+
+The pipeline **does not** invent a second pole when only one structure is visible.
+
+| State | Behavior |
+|-------|----------|
+| **`none`** | No confident vertical gate structure; overlay shows **no gate**. |
+| **`one`** | One dominant vertical peak; draws that pole and a small **“2nd pole…”** hint — **no** center line between two poles. |
+| **`two`** | Two separated peaks pass geometry checks; full overlay — green poles, **yellow center line**, width and centering error, optional bars and PnP. |
+
+This keeps downstream logic honest: use **`two`** for alignment and PnP; **`one`** can mean “approaching” or occlusion.
+
+---
+
+## Image processing stages
+
+The core path (see `gate_detection_core.py`) is designed for **murky, low-contrast** pool imagery.
+
+1. **Optional HSV boost** (qualification): red/orange masks weighted into gradients — helps when poles are colored and visibility allows.
+2. **Grayscale** and **CLAHE** for local contrast.
+3. **Gaussian blur** to reduce speckle.
+4. **Sobel-x** (vertical edges) and **Canny** edge map.
+5. **Morphology** (vertical closing) to connect broken edges.
+6. **Vertical run filter** — drop short segments; poles are tall.
+7. **Column strength** — sum edge response per column; find peaks with spacing constraints.
+8. **Sub-pixel** peak refinement and **skew** metric between pole regions.
+
+Outputs include **`left_x` / `right_x`**, **distance in pixels**, **center** vs image middle, and a **binary `filtered_edges`** ROI for PnP line fitting.
+
+---
+
+## Pose: PnP, FOV, and yaw
+
+**Camera matrix `K`**
+
+- Default: **`camera_matrix_from_fov(width, height, horizontal_fov_deg)`** — pinhole model from **horizontal FOV** only (`--fov`).
+- For real deployments, **replace with calibrated `K` and distortion `D`** (underwater calibration strongly recommended). `estimate_gate_pose()` accepts `dist`; the pipeline currently passes zeros.
+
+**Gate model**
+
+- Rectangle in the gate plane: **width** = `--gate-width` (meters), default **1.5**.
+- **Height** in 3D: if not fixed, **`infer_gate_height_m`** matches the **image quad aspect** (width in 3D fixed, height scales) — avoids assuming a square 1.5×1.5 m gate when the image aspect differs.
+
+**Image corners**
+
+- Prefer **intersections** of fitted **left/right pole lines** with **top/bottom horizontal** structure between poles; fallback to a bounding quad from the edge mask.
+- Corners are ordered **BL, BR, TR, TL** before PnP.
+
+**Solve**
+
+- `solvePnPRansac` then **`solvePnPRefineLM`**; mean reprojection error over the four corners is stored as **`reproj_err_px`**.
+
+**Normal and yaw**
+
+- Plane normal in the camera frame comes from the solved pose.
+- **Yaw error** uses the direction **into** the gate (**−normal**), with **`atan2(nx, nz)`** for a level camera (see `gate_pose_pnp.py`).
+
+**Display gate**
+
+- In `process_frame()`, the **PnP arrow, text, and magenta corner dots** are shown only if **`pose.ok`** and **`reproj_err_px ≤ 25`**. You still get raw pose in code paths that return it; the overlay is conservative.
+
+---
+
+## Temporal smoothing (video / live)
+
+`GateTemporalFilter` applies an **EMA** to **left_x** and **right_x** when state is **`two`**:
+
+`smoothed = alpha * smoothed_prev + (1 - alpha) * measurement`
+
+- **`alpha` → 1**: smoother, slower to move (more weight on history).
+- **`alpha` → 0**: follows measurements closely.
+
+**Suggested values**: batch sequences `~0.35`; live default in `live_gate_detector.py` is **`0.4`**. Set `--temporal 0` to disable.
+
+---
+
+## Command-line tools
+
+### `navigation_gate_detector.py`
+
+| Argument | Default | Description |
+|----------|---------|-------------|
+| `--folder` | `images/image_navigation_01` | Directory of `.png` images (relative to repo or absolute). |
+| `--delay` | `500` | Milliseconds between frames in GUI mode. |
+| `--no-gui` | off | Process all images, no windows; prints summary only. |
+| `--fov` | `60` | Horizontal field of view (degrees) for approximate `K`. |
+| `--gate-width` | `1.5` | Pole spacing in meters for PnP. |
+| `--no-pnp` | off | Disable pose estimation. |
+| `--temporal` | `0` | EMA `alpha` for poles; `0` = off. |
+
+Uses **`use_color_boost=False`**.
+
+---
+
+### `qualification_gate_detector.py`
+
+Same flags as navigation; defaults to **`images/image_qualification_01`**.
+
+Uses **`use_color_boost=True`** (HSV red/orange assist).
+
+---
+
+### `live_gate_detector.py`
+
+| Argument | Default | Description |
+|----------|---------|-------------|
+| `--device` | `0` | OpenCV camera index. |
+| `--width`, `--height` | `0` | Request resolution; `0` leaves driver default. |
+| `--fov` | `60` | Horizontal FOV (deg). |
+| `--gate-width` | `1.5` | Gate width (m). |
+| `--no-pnp` | off | Disable PnP. |
+| `--temporal` | `0.4` | EMA alpha (live default on). |
+| `--qualification` | off | Enable same HSV boost as qualification batch script. |
+
+Tries **V4L2** first, then default backend; sets **MJPG** where supported.
+
+---
+
+### `evaluate_gates.py`
+
+| Argument | Required | Description |
+|----------|----------|-------------|
+| `--folder` | yes | Image directory. |
+| `--qualification` | off | Use qualification detection (color boost). |
+| `--fov` | `60` | Horizontal FOV for `K`. |
+| `--gate-width` | `1.5` | Gate width (m). |
+
+Prints counts for **`two` / `one` / `none`**, mean/median/max **reprojection error** for successful PnP on two-pole frames, count of frames with **reproj ≤ 25 px**, and mean **|yaw_err|** when reprojection is in that good set. Ends with short **tuning hints**.
+
+---
+
+## Configuration (`PipelineConfig`)
+
+Defined in `gate_pipeline.py`:
+
+| Field | Meaning |
+|-------|--------|
+| `use_color_boost` | `False` = navigation style; `True` = qualification (HSV assist). |
+| `horizontal_fov_deg` | Used to build `K` via `camera_matrix_from_fov`. |
+| `gate_width_m` | Physical width between pole centers (m). |
+| `use_pnp` | If `False`, no `estimate_gate_pose` call. |
+| `temporal_alpha` | If `> 0`, EMA on pole x before PnP/draw (requires a `GateTemporalFilter` instance in `process_frame`). |
+
+---
+
+## Overlays and evaluation
+
+**Batch scripts** open **Gate Detection** (main) and **Edges** (small) when GUI is enabled.
+
+**Two poles**
+
+- Full-height **green** lines at pole x; **yellow** vertical center line; gray tick at image center.
+- Text: width (px), lateral error, skew.
+- Optional **orange** horizontal segments where **horizontal bars** are found between poles.
+- If PnP passes the reproj threshold: second line of text (yaw, reproj, normal), **arrow** from gate center, **magenta** corner markers.
+
+**One pole**
+
+- Orange pole line; status **“2nd pole…”**.
+
+**Live**
+
+- FPS and **state** on the bottom of the frame.
+
+---
+
+## Datasets and `.gitignore`
+
+Large data are **not** committed. `.gitignore` includes:
+
+- `air_dataset/`
+- `images/`
+- `gopro_videos/`
+
+Create `images/...` locally and add your own `image_navigation_*` / `image_qualification_*` folders of **`.png`** frames. Only `.png` files are enumerated by the batch scripts and `evaluate_gates.py`.
+
+---
+
+## Tuning and troubleshooting
+
+1. **Wrong FOV** → bad `K` → bad PnP and yaw even if poles look fine. Match `--fov` to the lens, or use a calibrated `K` (code change in `gate_pipeline.py` / `gate_pose_pnp.py`).
+2. **Underwater distortion** → calibrate **intrinsics + distortion** and pass `dist` into `estimate_gate_pose`.
+3. **High `one` or `none` rate** → inspect **Edges** window; adjust separation / strength logic in `gate_detection_core.py` (e.g. `min_sep_frac` / `max_sep_frac` and related thresholds — see file for current parameters).
+4. **PnP ok but reproj large** → corner construction failed partially; check lighting, motion blur, and occlusion.
+5. **Jittery live overlay** → increase `--temporal` toward `0.5` (smoother); decrease toward `0` for snappier response.
+
+---
+
+## Integration on the vehicle
+
+Typical integration steps (not implemented in this repo):
+
+1. Run **`process_frame()`** on each frame from your camera node (or wrap `live_gate_detector.py` logic).
+2. Subscribe to **`state == "two"`** for control and PnP; treat **`one`** as degraded.
+3. Replace **FOV-based `K`** with your calibration file for the underwater housing.
+4. Forward **center error (px)** or **yaw_error_deg** to your controller; fuse with **IMU** / depth as needed.
+5. For **ROS 2**, expose a node with image subscription and debug image publication.
+
+---
+
+## Dependencies
+
+From `requirements.txt`:
+
+- `opencv-python==4.8.1.78`
+- `numpy==1.24.4`
+
+Install:
+
+```bash
+pip install -r requirements.txt
 ```
 
-
-These libraries provide the image processing tools required for the detection pipeline.
-
 ---
 
-# Example Detection Output
-
-When the algorithm successfully detects a gate:
-
-- The left vertical pole is marked
-- The right vertical pole is marked
-- The distance between the poles is displayed
-
-This information indicates the apparent width of the gate in the camera frame.
-
-This value can be used to determine:
-
-- how centered the vehicle is
-- how far the gate is
-- whether the vehicle should yaw or sway
-
----
-
-# Deployment on the AUV
-
-The detection system is designed to run on the **Jetson Orin Nano onboard computer** used in the AUV.
-
-The vision pipeline will be integrated with the vehicle's control system to perform the following actions:
-
-- detect gate poles
-- compute alignment error
-- adjust yaw angle
-- perform lateral sway corrections
-- move forward through the gate
-
-This allows the vehicle to autonomously navigate through the gate without human intervention.
-
----
-
-# Future Improvements
-
-Potential improvements to the system include:
-
-- temporal filtering across consecutive frames
-- Kalman filtering for stable pole tracking
-- depth estimation using pole geometry
-- machine learning based gate detection
-- integration with ROS2 for full autonomy pipeline
-
-These improvements will further enhance the robustness and reliability of the perception system.
-
----
-
-# Authors
+## Authors
 
 Developed as part of the **Team Aritra AUV Project** for the **Singapore Autonomous Underwater Vehicle Challenge (SAUVC)**.

@@ -1,172 +1,102 @@
-import cv2
-import numpy as np
+"""
+Qualification gate: HSV red boost + poles + center + PnP.
+
+  python3 qualification_gate_detector.py --folder images/image_qualification_01
+"""
+
+from __future__ import annotations
+
+import argparse
 import os
+import sys
 
-IMAGE_FOLDER = "images/image_qualification_01"
+import cv2
 
-success = 0
-fail = 0
-total = 0
-
-cv2.namedWindow("Gate Detection", cv2.WINDOW_NORMAL)
-cv2.resizeWindow("Gate Detection",900,500)
-
-cv2.namedWindow("Edges", cv2.WINDOW_NORMAL)
-cv2.resizeWindow("Edges",450,250)
+from gate_pipeline import PipelineConfig, process_frame
+from gate_temporal import GateTemporalFilter
 
 
-def detect_poles(frame):
+def main() -> None:
+    p = argparse.ArgumentParser(description="Qualification gate detector")
+    p.add_argument("--folder", default="images/image_qualification_01")
+    p.add_argument("--delay", type=int, default=500)
+    p.add_argument("--no-gui", action="store_true")
+    p.add_argument("--fov", type=float, default=60.0)
+    p.add_argument("--gate-width", type=float, default=1.5)
+    p.add_argument("--no-pnp", action="store_true")
+    p.add_argument("--temporal", type=float, default=0.0)
+    args = p.parse_args()
 
-    height, width = frame.shape[:2]
+    root = os.path.dirname(os.path.abspath(__file__))
+    folder = args.folder
+    if not os.path.isabs(folder):
+        folder = os.path.join(root, folder)
+    if not os.path.isdir(folder):
+        print("Folder not found:", folder, file=sys.stderr)
+        sys.exit(1)
 
-    # KEEP YOUR ROI
-    roi = frame[int(height*0.01):int(height*0.99), :]
+    cfg = PipelineConfig(
+        use_color_boost=True,
+        horizontal_fov_deg=args.fov,
+        gate_width_m=args.gate_width,
+        use_pnp=not args.no_pnp,
+        temporal_alpha=args.temporal,
+    )
+    temporal = (
+        GateTemporalFilter(cfg.temporal_alpha)
+        if cfg.temporal_alpha > 0
+        else None
+    )
 
-    gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+    images = sorted(f for f in os.listdir(folder) if f.endswith(".png"))
+    n_two = n_one = n_none = 0
+    n_pnp = 0
 
-    clahe = cv2.createCLAHE(clipLimit=4.0, tileGridSize=(8,8))
-    gray = clahe.apply(gray)
+    if not args.no_gui:
+        cv2.namedWindow("Gate Detection", cv2.WINDOW_NORMAL)
+        cv2.resizeWindow("Gate Detection", min(1600, 1200), min(900, 800))
+        cv2.namedWindow("Edges", cv2.WINDOW_NORMAL)
+        cv2.resizeWindow("Edges", 640, 360)
 
-    blur = cv2.GaussianBlur(gray,(3,3),0)
+    for img_name in images:
+        path = os.path.join(folder, img_name)
+        frame = cv2.imread(path)
+        if frame is None:
+            continue
 
-    # vertical gradient
-    sobelx = cv2.Sobel(blur, cv2.CV_64F, 1, 0, ksize=3)
-    sobelx = np.uint8(np.absolute(sobelx))
+        st, pose, disp = process_frame(frame, cfg, temporal)
+        if st.state == "two":
+            n_two += 1
+            if pose and pose.ok:
+                n_pnp += 1
+        elif st.state == "one":
+            n_one += 1
+        else:
+            n_none += 1
 
-    edges = cv2.Canny(sobelx,25,70)
+        if not args.no_gui:
+            if st.filtered_edges is not None:
+                cv2.imshow("Edges", cv2.resize(st.filtered_edges, (640, 360)))
+            cv2.imshow(
+                "Gate Detection",
+                cv2.resize(disp, (min(1600, disp.shape[1]), min(900, disp.shape[0]))),
+            )
+            if cv2.waitKey(args.delay) == 27:
+                break
 
-    # reconnect vertical fragments
-    kernel = cv2.getStructuringElement(cv2.MORPH_RECT,(3,15))
-    edges = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel)
+    if not args.no_gui:
+        cv2.destroyAllWindows()
 
-    # remove short vertical noise
-    filtered = np.zeros_like(edges)
-
-    min_run = 60
-    h, w = edges.shape
-
-    for x in range(w):
-
-        run_start = None
-
-        for y in range(h):
-
-            if edges[y,x] != 0:
-
-                if run_start is None:
-                    run_start = y
-
-            else:
-
-                if run_start is not None:
-
-                    if y-run_start >= min_run:
-                        filtered[run_start:y,x] = 255
-
-                    run_start = None
-
-        if run_start is not None and h-run_start >= min_run:
-            filtered[run_start:h,x] = 255
-
-    cv2.imshow("Edges", cv2.resize(filtered,(450,250)))
-
-    # column strength
-    column_strength = np.sum(filtered, axis=0)
-
-    if np.max(column_strength) == 0:
-        return []
-
-    # smooth histogram
-    column_strength = cv2.GaussianBlur(column_strength.reshape(1,-1),(1,51),0).flatten()
-
-    # get two strongest peaks
-    sorted_idx = np.argsort(column_strength)[::-1]
-
-    poles = []
-    min_sep = 80
-
-    for idx in sorted_idx:
-
-        if len(poles) == 0:
-            poles.append(idx)
-
-        elif abs(idx - poles[0]) > min_sep:
-            poles.append(idx)
-            break
-
-    return poles
-
-
-images = sorted(os.listdir(IMAGE_FOLDER))
-
-for img in images:
-
-    if not img.endswith(".png"):
-        continue
-
-    total += 1
-
-    path = os.path.join(IMAGE_FOLDER,img)
-
-    frame = cv2.imread(path)
-
-    if frame is None:
-        continue
-
-    poles = detect_poles(frame)
-
-    if len(poles) == 2:
-
-        left = min(poles)
-        right = max(poles)
-
-        distance = right-left
-
-        h = frame.shape[0]
-
-        cv2.line(frame,(left,0),(left,h),(0,255,0),3)
-        cv2.line(frame,(right,0),(right,h),(0,255,0),3)
-
-        cv2.circle(frame,(left,h//2),10,(0,255,0),-1)
-        cv2.circle(frame,(right,h//2),10,(0,255,0),-1)
-
-        cv2.putText(frame,
-                    f"Distance: {distance}px",
-                    (left,50),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    1.2,
-                    (0,255,0),
-                    3)
-
-        success += 1
-
-    else:
-
-        cv2.putText(frame,
-                    "Detection Failed",
-                    (50,60),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    1.2,
-                    (0,0,255),
-                    3)
-
-        fail += 1
+    n = n_two + n_one + n_none
+    print("\nDetection Summary")
+    print("---------------------------")
+    print("Total Images:", n)
+    print("Two poles:", n_two, "| One pole:", n_one, "| None:", n_none)
+    if n_two > 0:
+        print("PnP solves (raw ok):", n_pnp, "/", n_two)
+    if n > 0:
+        print("Two-pole rate:", round(100 * n_two / n, 2), "%")
 
 
-    display = cv2.resize(frame,(900,500))
-    cv2.imshow("Gate Detection", display)
-
-    if cv2.waitKey(1000) == 27:
-        break
-
-
-print("\nDetection Summary")
-print("---------------------------")
-print("Total Images:", total)
-print("Successful:", success)
-print("Failed:", fail)
-
-if total > 0:
-    print("Success Rate:", round(success/total*100,2), "%")
-
-cv2.destroyAllWindows()
+if __name__ == "__main__":
+    main()
