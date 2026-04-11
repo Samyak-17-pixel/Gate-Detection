@@ -1,215 +1,111 @@
-import cv2
-import numpy as np
+"""
+Navigation gate: two poles + center line + optional PnP (normal / yaw hint).
+
+  python3 navigation_gate_detector.py
+  python3 navigation_gate_detector.py --temporal 0.35 --fov 65
+"""
+
+from __future__ import annotations
+
+import argparse
 import os
-
-IMAGE_FOLDER = "images/image_navigation_01"
-
-success = 0
-fail = 0
-total = 0
-
-cv2.namedWindow("Gate Detection", cv2.WINDOW_NORMAL)
-cv2.resizeWindow("Gate Detection",900,500)
-
-cv2.namedWindow("Edges", cv2.WINDOW_NORMAL)
-cv2.resizeWindow("Edges",450,250)
-
-
-def detect_vertical_poles(frame):
-
-    height, width = frame.shape[:2]
-
-    roi = frame[int(height*0.01):int(height*0.99), :]
-
-    gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-
-    clahe = cv2.createCLAHE(clipLimit=4.0, tileGridSize=(8,8))
-    gray = clahe.apply(gray)
-
-    blur = cv2.GaussianBlur(gray,(3,3),0)
-
-    sobelx = cv2.Sobel(blur, cv2.CV_64F, 1, 0, ksize=3)
-    sobelx = np.uint8(np.absolute(sobelx))
-
-    edges = cv2.Canny(sobelx,25,70)
-
-    kernel = cv2.getStructuringElement(cv2.MORPH_RECT,(3,15))
-    edges = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel)
-
-    filtered = np.zeros_like(edges)
-
-    min_run = 60
-    h, w = edges.shape
-
-    for x in range(w):
-
-        run_start = None
-
-        for y in range(h):
-
-            if edges[y,x] != 0:
-
-                if run_start is None:
-                    run_start = y
-
-            else:
-
-                if run_start is not None:
-
-                    if y-run_start >= min_run:
-                        filtered[run_start:y,x] = 255
-
-                    run_start = None
-
-        if run_start is not None and h-run_start >= min_run:
-            filtered[run_start:h,x] = 255
-
-
-    cv2.imshow("Edges", cv2.resize(filtered,(450,250)))
-
-    column_strength = np.sum(filtered, axis=0)
-
-    if np.max(column_strength) == 0:
-        return []
-
-    column_strength = cv2.GaussianBlur(column_strength.reshape(1,-1),(1,51),0).flatten()
-
-    sorted_idx = np.argsort(column_strength)[::-1]
-
-    poles = []
-    min_sep = 80
-
-    for idx in sorted_idx:
-
-        if len(poles) == 0:
-            poles.append(idx)
-
-        elif abs(idx - poles[0]) > min_sep:
-            poles.append(idx)
-            break
-
-    return poles
-
-
-def detect_horizontal_bars(frame, left, right):
-
-    height = frame.shape[0]
-
-    roi = frame[:, left:right]
-
-    gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-
-    blur = cv2.GaussianBlur(gray,(5,5),0)
-
-    sobely = cv2.Sobel(blur, cv2.CV_64F, 0, 1, ksize=3)
-    sobely = np.uint8(np.absolute(sobely))
-
-    edges = cv2.Canny(sobely,30,80)
-
-    kernel = cv2.getStructuringElement(cv2.MORPH_RECT,(25,3))
-    edges = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel)
-
-    row_strength = np.sum(edges, axis=1)
-
-    if np.max(row_strength) == 0:
-        return []
-
-    row_strength = cv2.GaussianBlur(row_strength.reshape(-1,1),(51,1),0).flatten()
-
-    peaks = np.argsort(row_strength)[::-1]
-
-    bars = []
-
-    min_sep = 40
-
-    for idx in peaks:
-
-        if len(bars) == 0:
-            bars.append(idx)
-
-        elif abs(idx - bars[0]) > min_sep:
-            bars.append(idx)
-            break
-
-    return bars
-
-
-images = sorted(os.listdir(IMAGE_FOLDER))
-
-for img in images:
-
-    if not img.endswith(".png"):
-        continue
-
-    total += 1
-
-    path = os.path.join(IMAGE_FOLDER,img)
-
-    frame = cv2.imread(path)
-
-    if frame is None:
-        continue
-
-    poles = detect_vertical_poles(frame)
-
-    if len(poles) == 2:
-
-        left = min(poles)
-        right = max(poles)
-
-        bars = detect_horizontal_bars(frame, left, right)
-
-        h = frame.shape[0]
-
-        cv2.line(frame,(left,0),(left,h),(0,255,0),3)
-        cv2.line(frame,(right,0),(right,h),(0,255,0),3)
-
-        if len(bars) >= 1:
-
-            for y in bars:
-
-                cv2.line(frame,(left,y),(right,y),(255,0,0),3)
-
-        distance = right-left
-
-        center = (left+right)//2
-
-        cv2.circle(frame,(center,h//2),10,(0,255,255),-1)
-
-        cv2.putText(frame,
-                    f"Width: {distance}px",
-                    (left,50),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    1.2,
-                    (0,255,0),
-                    3)
-
-        success += 1
-
-    else:
-
-        cv2.putText(frame,
-                    "Gate Not Detected",
-                    (50,60),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    1.2,
-                    (0,0,255),
-                    3)
-
-        fail += 1
-
-
-    display = cv2.resize(frame,(900,500))
-    cv2.imshow("Gate Detection", display)
-
-    if cv2.waitKey(1000) == 27:
-        break
-
-
-print("\nDetection Summary")
-print("---------------------------")
-print("Total Images:", total)
-print("Successful:", success)
-print("Failed:", fail)
-
-cv2.destroyAllWindows()
+import sys
+
+import cv2
+
+from gate_pipeline import PipelineConfig, process_frame
+from gate_temporal import GateTemporalFilter
+
+
+def main() -> None:
+    p = argparse.ArgumentParser(description="Navigation gate detector")
+    p.add_argument("--folder", default="images/image_navigation_01")
+    p.add_argument("--delay", type=int, default=500)
+    p.add_argument("--no-gui", action="store_true")
+    p.add_argument("--fov", type=float, default=60.0, help="Horizontal FOV (deg), approximate K")
+    p.add_argument("--gate-width", type=float, default=1.5, help="Pole spacing (m)")
+    p.add_argument("--no-pnp", action="store_true")
+    p.add_argument(
+        "--temporal",
+        type=float,
+        default=0.0,
+        help="EMA alpha for pole smoothing (0=off). Use ~0.35 for video-like sequences.",
+    )
+    args = p.parse_args()
+
+    root = os.path.dirname(os.path.abspath(__file__))
+    folder = args.folder
+    if not os.path.isabs(folder):
+        folder = os.path.join(root, folder)
+    if not os.path.isdir(folder):
+        print("Folder not found:", folder, file=sys.stderr)
+        sys.exit(1)
+
+    cfg = PipelineConfig(
+        use_color_boost=False,
+        horizontal_fov_deg=args.fov,
+        gate_width_m=args.gate_width,
+        use_pnp=not args.no_pnp,
+        temporal_alpha=args.temporal,
+    )
+    temporal = (
+        GateTemporalFilter(cfg.temporal_alpha)
+        if cfg.temporal_alpha > 0
+        else None
+    )
+
+    images = sorted(f for f in os.listdir(folder) if f.endswith(".png"))
+    n_two = n_one = n_none = 0
+    n_pnp = 0
+
+    if not args.no_gui:
+        cv2.namedWindow("Gate Detection", cv2.WINDOW_NORMAL)
+        cv2.resizeWindow("Gate Detection", min(1600, 1200), min(900, 800))
+        cv2.namedWindow("Edges", cv2.WINDOW_NORMAL)
+        cv2.resizeWindow("Edges", 640, 360)
+
+    for img_name in images:
+        path = os.path.join(folder, img_name)
+        frame = cv2.imread(path)
+        if frame is None:
+            continue
+
+        st, pose, disp = process_frame(frame, cfg, temporal)
+        if st.state == "two":
+            n_two += 1
+            if pose and pose.ok:
+                n_pnp += 1
+        elif st.state == "one":
+            n_one += 1
+        else:
+            n_none += 1
+
+        if not args.no_gui:
+            if st.filtered_edges is not None:
+                cv2.imshow(
+                    "Edges",
+                    cv2.resize(st.filtered_edges, (640, 360)),
+                )
+            cv2.imshow(
+                "Gate Detection",
+                cv2.resize(disp, (min(1600, disp.shape[1]), min(900, disp.shape[0]))),
+            )
+            if cv2.waitKey(args.delay) == 27:
+                break
+
+    if not args.no_gui:
+        cv2.destroyAllWindows()
+
+    n = n_two + n_one + n_none
+    print("\nDetection Summary")
+    print("---------------------------")
+    print("Total Images:", n)
+    print("Two poles:", n_two, "| One pole:", n_one, "| None:", n_none)
+    if n_two > 0:
+        print("PnP solves (raw ok):", n_pnp, "/", n_two)
+    if temporal is not None:
+        temporal.reset()
+
+
+if __name__ == "__main__":
+    main()
