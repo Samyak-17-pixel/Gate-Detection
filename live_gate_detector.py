@@ -38,6 +38,27 @@ def main() -> None:
         action="store_true",
         help="Use HSV red/orange boost (qualification gate)",
     )
+    p.add_argument(
+        "--edge-ignore",
+        type=float,
+        default=0.04,
+        dest="edge_ignore",
+        metavar="FRAC",
+        help="Fraction of frame width to ignore at left/right in column histogram (default 0.04).",
+    )
+    p.add_argument(
+        "--temporal-jump",
+        type=float,
+        default=0.32,
+        dest="temporal_jump",
+        metavar="FRAC",
+        help="Reset temporal filter if a pole jumps more than this fraction of width (default 0.32).",
+    )
+    p.add_argument(
+        "--show-edges",
+        action="store_true",
+        help="Second window: vertical-edge mask (same as batch scripts).",
+    )
     args = p.parse_args()
 
     cfg = PipelineConfig(
@@ -46,9 +67,13 @@ def main() -> None:
         gate_width_m=args.gate_width,
         use_pnp=not args.no_pnp,
         temporal_alpha=max(0.0, args.temporal),
+        edge_ignore_frac=args.edge_ignore,
+        temporal_max_jump_frac=args.temporal_jump,
     )
     temporal = (
-        GateTemporalFilter(cfg.temporal_alpha) if cfg.temporal_alpha > 0 else None
+        GateTemporalFilter(cfg.temporal_alpha, cfg.temporal_max_jump_frac)
+        if cfg.temporal_alpha > 0
+        else None
     )
 
     cap = cv2.VideoCapture(args.device, cv2.CAP_V4L2)
@@ -65,6 +90,9 @@ def main() -> None:
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, args.height)
 
     cv2.namedWindow("Gate Live", cv2.WINDOW_NORMAL)
+    if args.show_edges:
+        cv2.namedWindow("Edges", cv2.WINDOW_NORMAL)
+        cv2.resizeWindow("Edges", 640, 360)
 
     t0 = time.time()
     n = 0
@@ -75,6 +103,11 @@ def main() -> None:
                 break
             n += 1
             st, pose, disp = process_frame(frame, cfg, temporal)
+            if args.show_edges and st.filtered_edges is not None:
+                cv2.imshow(
+                    "Edges",
+                    cv2.resize(st.filtered_edges, (640, 360)),
+                )
             dt = time.time() - t0
             fps = n / dt if dt > 0 else 0.0
             cv2.putText(

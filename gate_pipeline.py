@@ -22,6 +22,10 @@ class PipelineConfig:
     use_pnp: bool = True
     temporal_alpha: float = 0.0
     """If >0, EMA smooth pole x before PnP/draw."""
+    edge_ignore_frac: float = 0.04
+    """Ignore this fraction of width at each side in the column histogram (webcam borders)."""
+    temporal_max_jump_frac: float = 0.32
+    """Reset EMA when a pole jumps by more than this fraction of frame width."""
 
 
 def detect_horizontal_bars(frame: np.ndarray, left: int, right: int) -> List[int]:
@@ -60,7 +64,11 @@ def process_frame(
     """
     out = frame_bgr.copy()
     h, w = out.shape[:2]
-    st = detect_gate_with_state(out, use_color_boost=cfg.use_color_boost)
+    st = detect_gate_with_state(
+        out,
+        use_color_boost=cfg.use_color_boost,
+        edge_ignore_frac=cfg.edge_ignore_frac,
+    )
 
     if st.state == "none":
         draw_status_corner(out, "no gate", (120, 120, 255))
@@ -72,9 +80,9 @@ def process_frame(
 
     lx, rx = st.left_x, st.right_x
     if temporal is not None and cfg.temporal_alpha > 0:
-        lx, rx = temporal.update_two(st.left_x, st.right_x)
+        lx, rx = temporal.update_two(st.left_x, st.right_x, frame_width=w)
 
-    center_err = st.center_x - (w / 2.0)
+    center_err = 0.5 * (lx + rx) - (w / 2.0)
     li, ri = int(round(lx)), int(round(rx))
     bars = detect_horizontal_bars(out, max(0, li), min(w, ri))
 

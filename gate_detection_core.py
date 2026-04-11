@@ -123,9 +123,13 @@ def build_column_strength(
     use_color_boost: bool = False,
     roi_top_frac: float = 0.02,
     roi_bot_frac: float = 0.98,
+    edge_ignore_frac: float = 0.04,
 ) -> Tuple[np.ndarray, np.ndarray, Tuple[int, int, int, int]]:
     """
     Returns (column_strength 1d float, filtered binary uint8, (x0,y0,x1,y1) ROI in frame coords).
+
+    ``edge_ignore_frac`` zeros the column histogram near left/right image borders so webcam
+    letterboxing, bezels, and vignetting do not dominate as fake vertical poles.
     """
     height, width = frame_bgr.shape[:2]
     y0 = int(height * roi_top_frac)
@@ -161,6 +165,10 @@ def build_column_strength(
     col = np.sum(filtered, axis=0).astype(np.float64)
     col = cv2.GaussianBlur(col.reshape(1, -1), (1, min(71, max(5, width // 12) | 1)), 0).flatten()
     col = np.sqrt(col + 1e-6)
+    margin = max(3, int(width * edge_ignore_frac))
+    if margin * 2 < width:
+        col[:margin] = 0.0
+        col[-margin:] = 0.0
     return col, filtered, (0, y0, width, y1)
 
 
@@ -251,6 +259,7 @@ def detect_gate_with_state(
     use_color_boost: bool = False,
     min_sep_frac: float = 0.11,
     max_sep_frac: float = 0.78,
+    edge_ignore_frac: float = 0.04,
 ) -> GateStateResult:
     """
     Two poles only if separation in [min_sep_frac, max_sep_frac] * width.
@@ -258,7 +267,9 @@ def detect_gate_with_state(
     """
     h, w = frame_bgr.shape[:2]
     col, filtered, (_x0, y0, _x1, _y1) = build_column_strength(
-        frame_bgr, use_color_boost=use_color_boost
+        frame_bgr,
+        use_color_boost=use_color_boost,
+        edge_ignore_frac=edge_ignore_frac,
     )
     min_sep = max(20, int(min_sep_frac * w))
     max_sep = min(int(max_sep_frac * w), w - 5)

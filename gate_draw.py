@@ -80,3 +80,53 @@ def draw_one_pole_searching(frame: np.ndarray, single_x: float) -> None:
     sx = int(round(np.clip(single_x, 0, w - 1)))
     cv2.line(frame, (sx, 0), (sx, h), (0, 165, 255), 3)
     draw_status_corner(frame, "2nd pole…", (200, 200, 200))
+
+
+def render_column_strength_bar(
+    column_strength: np.ndarray,
+    width: int,
+    *,
+    height: int = 140,
+    margin_frac: float = 0.04,
+) -> np.ndarray:
+    """
+    BGR image: normalized column-strength curve + shaded ignored side bands (debug).
+    """
+    s = np.asarray(column_strength, dtype=np.float64).flatten()
+    if s.size == 0:
+        return np.zeros((height, max(320, width), 3), dtype=np.uint8)
+    smax = float(np.max(s))
+    if smax <= 0:
+        smax = 1.0
+    w = s.size
+    bar_w = max(400, min(1200, w))
+    img = np.zeros((height, bar_w, 3), dtype=np.uint8)
+    m = max(2, int(w * margin_frac))
+    cv2.rectangle(img, (0, 0), (int(m * bar_w / w), height), (40, 25, 25), -1)
+    cv2.rectangle(
+        img,
+        (int((w - m) * bar_w / w), 0),
+        (bar_w - 1, height),
+        (40, 25, 25),
+        -1,
+    )
+    pts = []
+    for i in range(w):
+        x = int(i * (bar_w - 1) / max(1, w - 1))
+        t = float(s[i]) / smax
+        y = int((height - 14) * (1.0 - t)) + 6
+        pts.append((x, y))
+    if len(pts) >= 2:
+        for a, b in zip(pts[:-1], pts[1:]):
+            cv2.line(img, a, b, (0, 220, 255), 2, cv2.LINE_AA)
+    cv2.putText(
+        img,
+        "column strength (ignored edges shaded)",
+        (6, 16),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.45,
+        (200, 200, 200),
+        1,
+        cv2.LINE_AA,
+    )
+    return img
