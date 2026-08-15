@@ -2,9 +2,9 @@
 """
 Batch metrics on image folders: pole states, PnP, reprojection error.
 
-  python3 evaluate_gates.py --folder images/image_navigation_01
-  python3 evaluate_gates.py --folder images/image_qualification_01 --qualification
-  python3 evaluate_gates.py --folder images/image_navigation_01 --viz --delay 300
+  python3 scripts/evaluate_gates.py --folder images/image_navigation_01
+  python3 scripts/evaluate_gates.py --folder images/image_qualification_01 --qualification
+  python3 scripts/evaluate_gates.py --folder images/image_navigation_01 --viz --delay 300
 """
 
 from __future__ import annotations
@@ -12,12 +12,16 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import cv2
 import numpy as np
 
-from gate_draw import render_column_strength_bar
-from gate_pipeline import PipelineConfig, process_frame
+from gate_detection.draw import render_column_strength_bar
+from gate_detection.pipeline import PipelineConfig, process_frame
+from scripts.batch_viewer import resolve_folder
 
 
 def main() -> None:
@@ -47,11 +51,8 @@ def main() -> None:
     p.add_argument("--no-pnp", action="store_true", help="Skip PnP in viz mode (faster).")
     args = p.parse_args()
 
-    root = os.path.dirname(os.path.abspath(__file__))
-    folder = args.folder
-    if not os.path.isabs(folder):
-        folder = os.path.join(root, folder)
-    if not os.path.isdir(folder):
+    folder = resolve_folder(args.folder)
+    if not folder.is_dir():
         print("Not found:", folder, file=sys.stderr)
         sys.exit(1)
 
@@ -74,7 +75,7 @@ def main() -> None:
         cv2.namedWindow("evaluate: Columns", cv2.WINDOW_NORMAL)
 
     for name in names:
-        path = os.path.join(folder, name)
+        path = str(folder / name)
         im = cv2.imread(path)
         if im is None:
             continue
@@ -133,8 +134,8 @@ def main() -> None:
     print("\nFurther improvement ideas:")
     print("- Tune --fov to your camera; wrong FOV blows PnP even with aspect fix.")
     print("- Calibrate K,D in-water; replace camera_matrix_from_fov.")
-    print("- If 'one' is high: adjust min_sep_frac/max_sep_frac in gate_detection_core.")
-    print("- For live: live_gate_detector.py --edge-ignore 0.05 --temporal 0.35")
+    print("- If 'one' is high: adjust min_sep_frac/max_sep_frac in gate_detection/detection_core.py.")
+    print("- For live: python3 scripts/live_gate_detector.py --edge-ignore 0.05 --temporal 0.35")
 
 
 if __name__ == "__main__":

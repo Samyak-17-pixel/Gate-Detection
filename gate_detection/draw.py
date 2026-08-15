@@ -7,7 +7,7 @@ from typing import List, Optional, Tuple
 import cv2
 import numpy as np
 
-from gate_pose_pnp import GatePoseResult
+from .pose_pnp import GatePoseResult
 
 
 def draw_status_corner(frame: np.ndarray, text: str, color: Tuple[int, int, int]) -> None:

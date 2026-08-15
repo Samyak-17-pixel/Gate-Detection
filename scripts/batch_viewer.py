@@ -1,47 +1,41 @@
-"""
-Qualification gate: HSV red boost + poles + center + PnP.
-
-  python3 qualification_gate_detector.py --folder images/image_qualification_01
-"""
+"""Shared GUI/batch loop for navigation and qualification image folders."""
 
 from __future__ import annotations
 
 import argparse
 import os
 import sys
+from pathlib import Path
 
 import cv2
 
-from gate_pipeline import PipelineConfig, process_frame
-from gate_temporal import GateTemporalFilter
+from scripts._repo import REPO_ROOT, ensure_repo_on_path
+
+ensure_repo_on_path()
+
+from gate_detection.pipeline import PipelineConfig, process_frame
+from gate_detection.temporal import GateTemporalFilter
 
 
-def main() -> None:
-    p = argparse.ArgumentParser(description="Qualification gate detector")
-    p.add_argument("--folder", default="images/image_qualification_01")
-    p.add_argument("--delay", type=int, default=500)
-    p.add_argument("--no-gui", action="store_true")
-    p.add_argument("--fov", type=float, default=60.0)
-    p.add_argument("--gate-width", type=float, default=1.5)
-    p.add_argument("--no-pnp", action="store_true")
-    p.add_argument("--temporal", type=float, default=0.0)
-    args = p.parse_args()
+def resolve_folder(folder: str) -> Path:
+    path = Path(folder)
+    if not path.is_absolute():
+        path = REPO_ROOT / path
+    return path
 
-    root = os.path.dirname(os.path.abspath(__file__))
-    folder = args.folder
-    if not os.path.isabs(folder):
-        folder = os.path.join(root, folder)
-    if not os.path.isdir(folder):
+
+def run_batch(
+    *,
+    folder: Path,
+    cfg: PipelineConfig,
+    delay_ms: int,
+    no_gui: bool,
+    extra_summary: bool = False,
+) -> None:
+    if not folder.is_dir():
         print("Folder not found:", folder, file=sys.stderr)
         sys.exit(1)
 
-    cfg = PipelineConfig(
-        use_color_boost=True,
-        horizontal_fov_deg=args.fov,
-        gate_width_m=args.gate_width,
-        use_pnp=not args.no_pnp,
-        temporal_alpha=args.temporal,
-    )
     temporal = (
         GateTemporalFilter(cfg.temporal_alpha, cfg.temporal_max_jump_frac)
         if cfg.temporal_alpha > 0
@@ -52,14 +46,14 @@ def main() -> None:
     n_two = n_one = n_none = 0
     n_pnp = 0
 
-    if not args.no_gui:
+    if not no_gui:
         cv2.namedWindow("Gate Detection", cv2.WINDOW_NORMAL)
         cv2.resizeWindow("Gate Detection", min(1600, 1200), min(900, 800))
         cv2.namedWindow("Edges", cv2.WINDOW_NORMAL)
         cv2.resizeWindow("Edges", 640, 360)
 
     for img_name in images:
-        path = os.path.join(folder, img_name)
+        path = str(folder / img_name)
         frame = cv2.imread(path)
         if frame is None:
             continue
@@ -74,17 +68,17 @@ def main() -> None:
         else:
             n_none += 1
 
-        if not args.no_gui:
+        if not no_gui:
             if st.filtered_edges is not None:
                 cv2.imshow("Edges", cv2.resize(st.filtered_edges, (640, 360)))
             cv2.imshow(
                 "Gate Detection",
                 cv2.resize(disp, (min(1600, disp.shape[1]), min(900, disp.shape[0]))),
             )
-            if cv2.waitKey(args.delay) == 27:
+            if cv2.waitKey(delay_ms) == 27:
                 break
 
-    if not args.no_gui:
+    if not no_gui:
         cv2.destroyAllWindows()
 
     n = n_two + n_one + n_none
@@ -94,9 +88,22 @@ def main() -> None:
     print("Two poles:", n_two, "| One pole:", n_one, "| None:", n_none)
     if n_two > 0:
         print("PnP solves (raw ok):", n_pnp, "/", n_two)
-    if n > 0:
+    if extra_summary and n > 0:
         print("Two-pole rate:", round(100 * n_two / n, 2), "%")
+    if temporal is not None:
+        temporal.reset()
 
 
-if __name__ == "__main__":
-    main()
+def add_common_args(parser: argparse.ArgumentParser, default_folder: str) -> None:
+    parser.add_argument("--folder", default=default_folder)
+    parser.add_argument("--delay", type=int, default=500)
+    parser.add_argument("--no-gui", action="store_true")
+    parser.add_argument("--fov", type=float, default=60.0, help="Horizontal FOV (deg), approximate K")
+    parser.add_argument("--gate-width", type=float, default=1.5, help="Pole spacing (m)")
+    parser.add_argument("--no-pnp", action="store_true")
+    parser.add_argument(
+        "--temporal",
+        type=float,
+        default=0.0,
+        help="EMA alpha for pole smoothing (0=off). Use ~0.35 for video-like sequences.",
+    )
