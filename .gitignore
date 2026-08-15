@@ -16,9 +16,12 @@ env/
 .venv/
 gate_env/
 
-# Python cache
+# Python cache / packaging
 __pycache__/
 *.pyc
+*.egg-info/
+build/
+dist/
 
 # IDE
 .vscode/

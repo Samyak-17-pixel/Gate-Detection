@@ -195,7 +195,7 @@ def estimate_gate_pose(
     height_m: Optional[float] = None,
 ) -> GatePoseResult:
     """
-    filtered_roi: binary vertical-edge mask in ROI coordinates (same as gate_detection_core).
+    filtered_roi: binary vertical-edge mask in ROI coordinates (same as detection_core).
     """
     H, W = frame_bgr.shape[:2]
     if dist is None:

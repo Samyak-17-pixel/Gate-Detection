@@ -2,9 +2,9 @@
 """
 Live gate detection from a webcam / V4L2 device (navigation-style, no HSV boost).
 
-  python3 live_gate_detector.py
-  python3 live_gate_detector.py --device 2 --width 1280 --height 720 --fov 70
-  python3 live_gate_detector.py --qualification   # red/orange boost
+  python3 scripts/live_gate_detector.py
+  python3 scripts/live_gate_detector.py --device 2 --width 1280 --height 720 --fov 70
+  python3 scripts/live_gate_detector.py --qualification   # red/orange boost
 """
 
 from __future__ import annotations
@@ -12,11 +12,14 @@ from __future__ import annotations
 import argparse
 import sys
 import time
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import cv2
 
-from gate_pipeline import PipelineConfig, process_frame
-from gate_temporal import GateTemporalFilter
+from gate_detection.pipeline import PipelineConfig, process_frame
+from gate_detection.temporal import GateTemporalFilter
 
 
 def main() -> None:
